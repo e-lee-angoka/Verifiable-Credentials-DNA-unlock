@@ -25,23 +25,28 @@ class DeviceClient:
         self.jwk = None
         self.did = None
         self.verification_method = None
+        self.manufacturer_credential = None  # Credential issued by manufacturer
         
     def generate_key(self):
         '''Generate an EdDSA key pair using DIDKit'''
-        print("Generating EdDSA key pair...")
+        print("Generating EdDSA key pair for "+self.device_id+"...")
         
         # Generate a new Ed25519 key
         self.jwk = didkit.generateEd25519Key()
         jwk_dict = json.loads(self.jwk)
         
+        # Debug: print the full key (be careful - this includes private key!)
+        print(f"\nFull JWK generated:")
+        print(json.dumps(jwk_dict, indent=2))
+        
         # Get the DID from the key
         self.did = didkit.keyToDID("key", self.jwk)
+        print(f"DID: {self.did}")
         
         # Get the verification method
         self.verification_method = didkit.keyToVerificationMethod("key", self.jwk)
         
-        print(f"Key generated successfully!")
-        print(f"DID: {self.did}")
+        print(f"\nKey generated successfully!")
         print(f"Public key (x): {jwk_dict.get('x')}")
         
         return self.jwk
@@ -59,13 +64,9 @@ class DeviceClient:
             'kty': jwk_dict.get('kty'),
             'crv': jwk_dict.get('crv'),
             'x': jwk_dict.get('x'),
-            #'use': jwk_dict.get('use')  # Optional but good to include
+            'use': jwk_dict.get('use')  # Optional but good to include
         }
-
-        # Debug: print what we're sending
-        #print(f"\nPublic key being sent:")
-        #print(json.dumps(public_key, indent=2))
-        
+             
         url = f'{self.base_url}/api/devices/register'
         payload = {
             'device_id': self.device_id,
@@ -73,36 +74,72 @@ class DeviceClient:
             'did': self.did,
             'verification_method': self.verification_method
         }
-        #print(f"\nPayload: {payload}")
+        
+        # Debug: print what we're sending
+        print(f"\nPayload being sent:")
+        print(json.dumps(payload, indent=2))
         
         try:
             response = requests.post(url, json=payload)
             response.raise_for_status()
+            response_data = response.json()
+            
             print(f"\nDevice registered successfully!")
-            print(json.dumps(response.json(), indent=2))
+            
+            # this needs to move sooner
+            # Store the manufacturer's credential
+            self.manufacturer_credential = response_data.get('credential')
+            
+            if self.manufacturer_credential:
+                print(f"\n✓ Received credential from manufacturer!")
+                print(f"Credential type: {self.manufacturer_credential.get('type')}")
+                print(f"Issuer: {self.manufacturer_credential.get('issuer')}")
+                print(f"Subject: {self.manufacturer_credential.get('credentialSubject', {}).get('id')}")
+                
+                # Verify the manufacturer's credential
+                print(f"\nVerifying manufacturer's credential...")
+                try:
+                    verify_options = json.dumps({"proofPurpose": "assertionMethod"})
+                    verification_result = didkit.verifyCredential(
+                        json.dumps(self.manufacturer_credential),
+                        verify_options
+                    )
+                    result_dict = json.loads(verification_result)
+                    
+                    if len(result_dict.get('errors', [])) == 0:
+                        print(f"✓ Manufacturer credential verified successfully!")
+                    else:
+                        print(f"✗ Manufacturer credential verification failed: {result_dict.get('errors')}")
+                except Exception as e:
+                    print(f"✗ Error verifying manufacturer credential: {e}")
+            
+            print(f"\nFull registration response:")
+            print(json.dumps(response_data, indent=2))
             return True
         except requests.exceptions.RequestException as e:
             print(f"Registration failed: {e}")
             return False
     
     def issue_credential(self, message):
-        '''Issue a verifiable credential with a message'''
+        '''Self-issue a verifiable credential with a message'''
         if not self.jwk:
             print("No key available for signing")
             return None
         
+        print(f"\nDEBUG: Full JWK before signing:")
+        print(self.jwk)
+        
         print(f"\nCreating verifiable credential with message: {message}")
         
         # Create a simple verifiable credential
+        # Use the DID as the issuer (not a custom device: prefix)
         credential = {
-            "@context": ["https://www.w3.org/2018/credentials/v1"],
+            "@context": "https://www.w3.org/2018/credentials/v1",
             "type": ["VerifiableCredential"],
-            "issuer": f"device:{self.device_id}",
+            "issuer": self.did,
             "issuanceDate": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             "credentialSubject": {
-                "id": f"device:{self.device_id}",
-                "message": message,
-                "deviceId": self.device_id
+                "id": self.did
             }
         }
         
@@ -111,6 +148,11 @@ class DeviceClient:
             "proofPurpose": "assertionMethod",
             "verificationMethod": self.verification_method
         }
+        
+        print(f"Credential to sign:")
+        print(json.dumps(credential, indent=2))
+        #print(f"\nOptions:")
+        #print(json.dumps(options, indent=2))
         
         try:
             # Issue the credential using DIDKit
@@ -124,6 +166,7 @@ class DeviceClient:
             return signed_credential
         except Exception as e:
             print(f"Error issuing credential: {e}")
+            print(f"Error type: {type(e)}")
             return None
     
     def send_credential(self, message):
@@ -135,7 +178,8 @@ class DeviceClient:
         
         url = f'{self.base_url}/api/devices/{self.device_id}/verify-credential'
         payload = {
-            'credential': json.loads(credential) if isinstance(credential, str) else credential
+            'credential': json.loads(credential) if isinstance(credential, str) else credential,
+            'message': message  # Send message separately
         }
         
         try:
@@ -152,9 +196,13 @@ def main():
     print("Device Client with DIDKit EdDSA Keys")
     print("=" * 60)
     
+    # First, let's check what functions are available
+    #print("\nAvailable DIDKit functions:")
+    #print([func for func in dir(didkit) if not func.startswith('_')])
+    #print()
+    
     # Create a device instance
-    test_id = 'DEVICE-001'
-    device = DeviceClient(device_id=test_id)
+    device = DeviceClient(device_id='DEVICE-001')
     
     # Generate EdDSA key pair
     try:
@@ -177,7 +225,7 @@ def main():
     print("=" * 60)
     
     # Create and send a credential
-    test_message = "Hello from " + test_id + ". This is a test message."
+    test_message = "Hello from DEVICE-001. This is a test for PoC."
     device.send_credential(test_message)
     
     print("\n" + "=" * 60)
