@@ -29,7 +29,7 @@ class DeviceClient:
         self.registration_verification_method = None
         self.jwk = None # keypair used for general authentication
         self.did = None
-        self.verification_method = None
+        self.verification_method = None # for the general verification key
         self.verifiable_credential = None
         
     def provision_from_factory(self):
@@ -54,18 +54,18 @@ class DeviceClient:
             registration_jwk_dict = response_data.get('jwk')
             self.registration_jwk = json.dumps(registration_jwk_dict)
             self.registration_did = response_data.get('did')
-            self.verification_method = response_data.get('verification_method')
+            self.registration_verification_method = response_data.get('verification_method')
 
             # Extract manufacturer information
             manufacturer_public_key_dict = response_data.get('manufacturer_public_key')
             self.manufacturer_public_key = json.dumps(manufacturer_public_key_dict)
-            #self.manufacturer_credential = response_data.get('credential')#HHHHH
+            #self.manufacturer_credential = response_data.get('credential')
 
             print(f"  ✓ Received long-term registration keypair")
             print(f"     Registration key: {self.registration_jwk}")
             print(f"     Registration public key (x): {registration_jwk_dict.get('x')}")
             print(f"     Registration DID: {self.registration_did}")
-            print(f"     Verification method: {self.verification_method}")
+            print(f"     Registration Verification method: {self.registration_verification_method}")
             print(f"  ✓ Received manufacturer information")
             print(f"     Manufacturer public key (x): {manufacturer_public_key_dict}")
             #print(f"     Manufacturer VC: {self.manufacturer_credential}")
@@ -103,8 +103,8 @@ class DeviceClient:
 
         return self.jwk
     
-    def register(self):
-        '''Register this device with the manufacturer, sending public key'''
+    def register_key(self):
+        '''Register this device with the manufacturer, sending signed request'''
         print("\n" + "=" * 60)
         print(f"Registering {self.device_id}  with manufacturer...")
         print("=" * 60)
@@ -125,12 +125,51 @@ class DeviceClient:
         # Get verification method from device key
         verification_method = didkit.keyToVerificationMethod("key", self.jwk)
 
+        # Create a verifiable credential containing the registration data
+        print(f"Creating signed registration request...")
+        registration_credential = {
+            "@context": [
+                "https://www.w3.org/2018/credentials/v1",
+                {
+                    "DeviceRegistrationRequest": "https://example.org/credentials#DeviceRegistrationRequest",
+                    "device_id": "https://example.org/credentials#deviceId",
+                    "public_key_jwk": "https://example.org/credentials#publicKeyJwk",
+                    "did": "https://example.org/credentials#did",
+                    "verification_method": "https://example.org/credentials#verificationMethod"
+                }
+            ],
+            "type": ["VerifiableCredential", "DeviceRegistrationRequest"],
+            "issuer": self.registration_did,
+            "issuanceDate": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            "credentialSubject": {
+                "device_id": self.device_id,
+                "public_key_jwk": json.dumps(public_key),  # Serialize as string to avoid JSON-LD expansion issues
+                "did": self.did,
+                "verification_method": verification_method
+            }
+        }
+
+        # Sign the registration request with the registration key
+        proof_options = {
+            "proofPurpose": "assertionMethod",
+            "verificationMethod": self.registration_verification_method
+        }
+
+        try:
+            signed_registration = didkit.issueCredential(
+                json.dumps(registration_credential),
+                json.dumps(proof_options),
+                self.registration_jwk
+            )
+            signed_registration_dict = json.loads(signed_registration)
+            print(f"✓ Registration request signed with registration key")
+        except Exception as e:
+            print(f"✗ Error signing registration request: {e}")
+            return False
+
         url = f'{self.base_url}/api/devices/register'
         payload = {
-            'device_id': self.device_id,
-            'public_key_jwk': public_key,
-            'did': self.did,
-            'verification_method': verification_method
+            'signed_registration': signed_registration_dict
         }
 
         try:
@@ -138,7 +177,7 @@ class DeviceClient:
             response.raise_for_status()
             response_data = response.json()
             
-            print(f"\nDevice registered successfully!")
+            print(f"\nKey registered successfully!")
             
             # Store the manufacturer's public key credential
             self.verifiable_credential = response_data.get('credential')
@@ -275,13 +314,9 @@ def main():
         print("Failed to generate device local keypair, exiting")
         return
 
-    # Step 4: Register public key with manufacturer
-    print("\n" + "=" * 60)
-    print("Registering public key with Manufacturer")
-    print("=" * 60)
-    
-    if not device.register():
-        print("Failed to register device, exiting")
+    # Step 4: Register public key with manufacturer    
+    if not device.register_key():
+        print("Failed to register device key, exiting")
         return
     """
     # Create and send a credential

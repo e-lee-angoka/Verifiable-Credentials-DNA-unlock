@@ -74,7 +74,7 @@ def init_manufacturer(man_id):
         )
         manufacturer_credential = json.loads(signed_manufacturer_credential)
         print(f"✓ Manufacturer self-signed credential issued")
-        print(f"  {manufacturer_credential}")
+        #print(f"  {manufacturer_credential}")
     except Exception as e:
         print(f"✗ Error issuing manufacturer credential: {e}")
         manufacturer_credential = None
@@ -88,16 +88,17 @@ def provision_device():
 
     data = request.json
     device_id = data.get('device_id')
+    print("\n" + "=" * 60)
+    print(f"\nReceived provisioning request from {device_id}")
+    print("\n" + "=" * 60)
 
     if not device_id:
         return jsonify({'error': 'device_id required'}), 400
 
-    print(f"\n=== Provisioning Device: {device_id} ===")
-
     # Generate a new Ed25519 keypair for the device
     print(f"Generating long-term registration keypair for device...")
     device_registration_jwk = didkit.generateEd25519Key()
-    print(f"✓ Registration Keypair generated")
+    print(f" ✓ Registration Keypair generated")
 
     # Extract public key only (exclude private key 'd')
     registration_jwk_dict = json.loads(device_registration_jwk)
@@ -107,10 +108,10 @@ def provision_device():
         'x': registration_jwk_dict.get('x'),
         'use': registration_jwk_dict.get('use')
     }
-    print(f"✓ Device registration public key (x): {registration_public_key.get('x')}")
+    print(f" ✓ Device registration public key (x): {registration_public_key.get('x')}")
 
     device_did = didkit.keyToDID("key", device_registration_jwk)
-    print(f"✓ Device DID: {device_did}")
+    print(f" ✓ Device DID: {device_did}")
     device_verification_method = didkit.keyToVerificationMethod("key", device_registration_jwk)
 
     # Store initial device info (will be completed during registration)
@@ -122,6 +123,7 @@ def provision_device():
         'provisioned_at': datetime.now().isoformat(),
         'status': 'provisioned'
     }
+    print(f"✓ Device details stored in manufactured_devices")
 
     print(f"✓ Device provisioned successfully")
     print("=" * 50 + "\n")
@@ -139,18 +141,66 @@ def provision_device():
 
 @app.route('/api/devices/register', methods=['POST'])
 def register_device():
-    """Register a new device with its public key and DID, then issue a credential"""
+    """Register a new device with its signed registration request, then issue a credential"""
     data = request.json # received from device
-    device_id = data.get('device_id')
-    print(f"Registration request received from device {device_id}")
-    public_key_jwk = data.get('public_key_jwk')
-    did = data.get('did')
-    verification_method = data.get('verification_method')
+    signed_registration = data.get('signed_registration')
+
+    if not signed_registration:
+        return jsonify({'error': 'signed_registration required'}), 400
+
+    print(f"\n=== Processing Signed Registration Request ===")
+
+    # Step 1: Verify the signature on the registration request
+    try:
+        print(f"Verifying registration request signature...")
+        verify_options = json.dumps({"proofPurpose": "assertionMethod"})
+        verification_result = didkit.verifyCredential(
+            json.dumps(signed_registration),
+            verify_options
+        )
+        result_dict = json.loads(verification_result)
+
+        if len(result_dict.get('errors', [])) > 0:
+            print(f"✗ Registration signature verification failed: {result_dict.get('errors')}")
+            return jsonify({
+                'error': 'Registration signature verification failed',
+                'details': result_dict.get('errors')
+            }), 401
+
+        print(f"✓ Registration signature verified successfully")
+    except Exception as e:
+        print(f"✗ Error verifying registration signature: {e}")
+        return jsonify({'error': f'Signature verification error: {str(e)}'}), 500
+
+    # Step 2: Extract registration data from the credential
+    issuer_did = signed_registration.get('issuer')
+    credential_subject = signed_registration.get('credentialSubject', {})
+    device_id = credential_subject.get('device_id')
+    public_key_jwk_str = credential_subject.get('public_key_jwk')
+    # Parse the JWK back from JSON string
+    public_key_jwk = json.loads(public_key_jwk_str) if isinstance(public_key_jwk_str, str) else public_key_jwk_str
+    did = credential_subject.get('did')
+    verification_method = credential_subject.get('verification_method')
 
     if not device_id or not public_key_jwk or not did:
-        return jsonify({'error': 'device_id, public_key_jwk, and did required'}), 400
+        return jsonify({'error': 'Invalid registration data in signed credential'}), 400
 
-    print(f"\n=== Registering Device: {device_id} ===")
+    print(f"Registration request received from device {device_id}")
+
+    # Step 3: Verify the device was provisioned and the issuer DID matches
+    if device_id not in manufactured_devices:
+        print(f"✗ Device {device_id} was not provisioned by this factory")
+        return jsonify({'error': 'Device not provisioned by this factory'}), 403
+
+    provisioned_device = manufactured_devices[device_id]
+    if provisioned_device['did'] != issuer_did:
+        print(f"✗ Issuer DID does not match provisioned registration DID")
+        print(f"  Expected: {provisioned_device['did']}")
+        print(f"  Received: {issuer_did}")
+        return jsonify({'error': 'Registration DID mismatch'}), 403
+
+    print(f"✓ Device provisioning verified")
+    print(f"\n=== Key registration request from {device_id} ===")
     print(f"Device DID: {did}")
 
     # Store device info
