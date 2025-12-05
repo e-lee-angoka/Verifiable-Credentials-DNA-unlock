@@ -1,27 +1,17 @@
 # Code for the device
 
-# Generate DID
-# Await "trigger provisioning"
-
-# Stage 1.2: Send DID to manufacturer
-#  triggered by receiving "trigger provisioning" request
-
-# Stage 1.3: Receive VC from manufacturer
-
-# Stage 2.2 Send VP (Verifiable Presentation) to user_gateway
-#  triggered by receiving challenge
-#  generates VP using challenge and VC
-
-
 import requests # to make http requests
 import json # to facilitate data transfer
 import didkit # for verifiable credentials
 from datetime import datetime, timezone # for timestamps
+from flask import Flask, request, jsonify # to run as a server
+import threading # to run server in background
 
 class DeviceClient:
-    def __init__(self, device_id, base_url='http://localhost:5000'):
+    def __init__(self, device_id, base_url='http://localhost:5000', device_port=6000):
         self.device_id = device_id
-        self.base_url = base_url
+        self.base_url = base_url  # Factory server at port 5000
+        self.device_port = device_port  # Device's own server at port 6000 (different from factory!)
         #self.manufacturer_credential = None  # Credential issued by manufacturer
         self.manufacturer_public_key = None  # Manufacturer's public key for verification
         self.registration_jwk = None # keypair used to register future keys
@@ -31,6 +21,8 @@ class DeviceClient:
         self.did = None
         self.verification_method = None # for the general verification key
         self.verifiable_credential = None
+        self.app = None  # Flask app instance
+        self.server_thread = None  # Thread for running server
         
     def provision_from_factory(self):
         '''Request a long-term keypair from the factory'''
@@ -106,11 +98,11 @@ class DeviceClient:
     def register_key(self):
         '''Register this device with the manufacturer, sending signed request'''
         print("\n" + "=" * 60)
-        print(f"Registering {self.device_id}  with manufacturer...")
+        print(f"Registering {self.device_id}'s auth key with manufacturer...")
         print("=" * 60)
 
         if not self.registration_jwk:
-            print("No key available, must provision from factory first")
+            print("No registration key, must provision from factory first")
             return False
 
         jwk_dict = json.loads(self.registration_jwk)
@@ -212,7 +204,162 @@ class DeviceClient:
         except requests.exceptions.RequestException as e:
             print(f"Registration failed: {e}")
             return False
-    
+
+    def generate_presentation(self, challenge, gateway_did):
+        '''Generate a verifiable presentation in response to a challenge'''
+        print("\n" + "=" * 60)
+        print(f"Generating verifiable presentation for challenge...")
+        print("=" * 60)
+
+        if not self.verifiable_credential:
+            print("✗ No credential available to present")
+            return None
+
+        if not self.jwk:
+            print("✗ No key available for signing presentation")
+            return None
+
+        print(f"Challenge: {challenge[:16]}...")
+        print(f"Gateway DID: {gateway_did}")
+
+        # Clean the JWK - only keep standard fields required by DIDKit
+        jwk_dict = json.loads(self.jwk)
+        cleaned_jwk = {
+            'kty': jwk_dict.get('kty'),
+            'crv': jwk_dict.get('crv'),
+            'x': jwk_dict.get('x'),
+            'd': jwk_dict.get('d')  # Private key component
+        }
+        # Remove any None values
+        cleaned_jwk = {k: v for k, v in cleaned_jwk.items() if v is not None}
+        cleaned_jwk_str = json.dumps(cleaned_jwk)
+
+        # Create a verifiable presentation
+        # The presentation includes the credential and is signed by the device
+        # NOTE: challenge goes in proof_options, NOT in the presentation itself
+        presentation = {
+            "@context": [
+                "https://www.w3.org/2018/credentials/v1"
+            ],
+            "type": ["VerifiablePresentation"],
+            "holder": self.did,
+            "verifiableCredential": [self.verifiable_credential]
+        }
+
+        # Proof options for signing the presentation
+        # Challenge is included here to bind the proof to this specific authentication attempt
+        proof_options = {
+            "proofPurpose": "authentication",
+            "verificationMethod": self.verification_method,
+            "challenge": challenge
+        }
+
+        try:
+            # Sign the presentation using DIDKit with cleaned JWK
+            signed_presentation = didkit.issuePresentation(
+                json.dumps(presentation),
+                json.dumps(proof_options),
+                cleaned_jwk_str
+            )
+
+            vp = json.loads(signed_presentation)
+            print(f"✓ Verifiable presentation generated and signed")
+            print(f"   Holder: {vp.get('holder')}")
+            print(f"   Credentials: {len(vp.get('verifiableCredential', []))}")
+
+            return vp
+
+        except Exception as e:
+            print(f"✗ Error generating presentation: {e}")
+            print(f"   JWK fields present: {list(cleaned_jwk.keys())}")
+            print(f"   Verification method: {self.verification_method}")
+            return None
+
+    def handle_challenge(self, challenge, gateway_did):
+        '''Handle an authentication challenge from a gateway'''
+        print("\n" + "=" * 60)
+        print(f"Received authentication challenge from gateway")
+        print("=" * 60)
+        print(f" challenge: {challenge}")
+
+        # Generate and return the verifiable presentation
+        vp = self.generate_presentation(challenge, gateway_did)
+
+        if vp:
+            print(f"✓ Ready to send verifiable presentation to gateway")
+            return vp
+        else:
+            print(f"✗ Failed to generate verifiable presentation")
+            return None
+
+    def setup_server(self):
+        '''Set up Flask server for receiving challenges'''
+        print("\n" + "=" * 60)
+        print(f"Setting up device server on port {self.device_port}...")
+        print("=" * 60)
+
+        self.app = Flask(f"Device-{self.device_id}")
+
+        # Store reference to self for use in route handlers
+        device_instance = self
+
+        @self.app.route('/challenge', methods=['POST'])
+        def receive_challenge():
+            '''Endpoint to receive authentication challenges'''
+            data = request.json
+            challenge = data.get('challenge')
+            gateway_did = data.get('gateway_did')
+
+            if not challenge or not gateway_did:
+                return jsonify({'error': 'Missing challenge or gateway_did'}), 400
+
+            # Generate VP using the device instance
+            vp = device_instance.handle_challenge(challenge, gateway_did)
+
+            if vp:
+                return jsonify({'verifiable_presentation': vp}), 200
+            else:
+                return jsonify({'error': 'Failed to generate verifiable presentation'}), 500
+
+        @self.app.route('/status', methods=['GET'])
+        def status():
+            '''Health check endpoint'''
+            return jsonify({
+                'device_id': device_instance.device_id,
+                'did': device_instance.did,
+                'status': 'active',
+                'has_credential': device_instance.verifiable_credential is not None
+            }), 200
+
+        print(f"✓ Server routes configured")
+
+    def start_server(self):
+        '''Start the Flask server in a background thread'''
+        if not self.app:
+            print("✗ Server not set up. Call setup_server() first.")
+            return False
+
+        print("\n" + "=" * 60)
+        print(f"Starting device server on http://localhost:{self.device_port}")
+        print("=" * 60)
+
+        def run_server():
+            self.app.run(
+                host='0.0.0.0',
+                port=self.device_port,
+                debug=False,
+                use_reloader=False
+            )
+
+        self.server_thread = threading.Thread(target=run_server, daemon=True)
+        self.server_thread.start()
+
+        print(f"✓ Device server running on port {self.device_port}")
+        print(f"   Challenge endpoint: http://localhost:{self.device_port}/challenge")
+        print(f"   Status endpoint: http://localhost:{self.device_port}/status")
+
+        return True
+
     """
     def issue_credential(self, message):
         '''Self-issue a verifiable credential with a message'''
@@ -314,25 +461,32 @@ def main():
         print("Failed to generate device local keypair, exiting")
         return
 
-    # Step 4: Register public key with manufacturer    
+    # Step 4: Register public key with manufacturer
     if not device.register_key():
         print("Failed to register device key, exiting")
         return
-    """
-    # Create and send a credential
-    print("\n" + "=" * 60)
 
-    print("Creating and Sending Credential")
+    # Step 5: Set up and start device server
+    device.setup_server()
+    if not device.start_server():
+        print("Failed to start device server, exiting")
+        return
+
+    #print("\n" + "=" * 60)
+    print("------Device registration and server startup completed!-----")
+    #print("=" * 60)
+    print(f" Device {test_id} is now ready to receive authentication challenges")
+    print(f" Server listening on http://localhost:{device.device_port}")
     print("=" * 60)
-    
-    test_message = "Hello from DEVICE-001. This is a test for PoC."
-    #device.send_credential(test_message)
-    
-    # Done
-    print("\n" + "=" * 60)
-    print("Device registration completed!")
-    print("=" * 60)
-    """
+
+    # Keep the main thread alive so the server continues running
+    try:
+        print("\nPress Ctrl+C to stop the device server...")
+        while True:
+            import time
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\nShutting down device server...")
 
 if __name__ == '__main__':
     main()
