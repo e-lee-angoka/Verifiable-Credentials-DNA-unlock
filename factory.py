@@ -16,6 +16,7 @@ app = Flask(__name__)
 
 # Manufacturer's own key pair (generated once at startup)
 manufacturer_jwk = None
+manufacturer_id = None
 manufacturer_did = None
 manufacturer_verification_method = None
 manufacturer_credential = None
@@ -27,14 +28,14 @@ registered_devices = {}
 
 # initialise manufacturer
 def init_manufacturer(man_id):
-    manufacturer_id = man_id # for testing
     """Initialize the manufacturer's identity"""
-    global manufacturer_jwk, manufacturer_did, manufacturer_verification_method, manufacturer_credential, manufacturer_public_key
+    global manufacturer_jwk, manufacturer_id, manufacturer_did, manufacturer_verification_method, manufacturer_credential, manufacturer_public_key
+    manufacturer_id = man_id # for testing
     print("\n" + "=" * 60)
     print("Initialising Manufacturer Identity")
     print("=" * 60)
     manufacturer_jwk = didkit.generateEd25519Key()
-    manufacturer_did = didkit.keyToDID("key", manufacturer_jwk)
+    manufacturer_did = didkit.keyToDID("key", manufacturer_jwk) # The did:key method is specifically designed so the DID is just a base58-encoded representation of the public key.
     manufacturer_verification_method = didkit.keyToVerificationMethod("key", manufacturer_jwk)
     print(f" Manufacturer DID: {manufacturer_did}")
 
@@ -344,7 +345,7 @@ def get_device(device_id):
 @app.route('/api/gateways/provision', methods=['POST'])
 def provision_gateway():
     """Provision a user gateway by sending the device manufacturer identity"""
-    global manufacturer_jwk, manufacturer_did, manufacturer_verification_method
+    global manufacturer_jwk, manufacturer_id, manufacturer_did, manufacturer_verification_method
 
     data = request.json
     gateway_id = data.get('gateway_id')
@@ -355,20 +356,13 @@ def provision_gateway():
     if not gateway_id:
         return jsonify({'error': 'gateway_id required'}), 400
 
-    #device_did = didkit.keyToDID("key", device_registration_jwk)
-    #print(f" ✓ Device DID: {device_did}")
-    #device_verification_method = didkit.keyToVerificationMethod("key", device_registration_jwk)
-
     print(f"✓ Gateway provisioned successfully")
 
     # Return the full keypair (including private key), and public key to the device
     return jsonify({
         'message': 'Gateway provisioned successfully',
         'gateway_id': gateway_id,
-        #'jwk': json.loads(device_registration_jwk),  # Full keypair including private key
-        #'did': device_did,
-        #'verification_method': device_verification_method,
-        #'manufacturer_credential': manufacturer_credential,  # Manufacturer's self-signed credential
+        'manufacturer_id': manufacturer_id,
         'manufacturer_did': manufacturer_did,  # Manufacturer's DID to verify VC issuers
         'manufacturer_public_key': manufacturer_public_key  # Manufacturer's public key for signature verification
     }), 201
