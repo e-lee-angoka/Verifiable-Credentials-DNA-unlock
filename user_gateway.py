@@ -14,60 +14,95 @@ class GatewayClient:
         self.did = didkit.keyToDID("key", self.jwk)
         self.credentials = []  # Wallet to store credentials
         self.current_challenge = None  # Store current challenge for verification
+        self.manufacturer_did = None  # Trusted issuer DID (set during provisioning)
 
         print(f"\n{'='*60}")
         print(f"📱 Gateway {self.gateway_id} initialised")
         print(f"{'='*60}")
-        print(f"Gateway DID: {self.did}")
+        #print(f"Gateway DID: {self.did}")
 
-    def generate_challenge(self):
-        '''Generate a cryptographic challenge (nonce) for authentication'''
+    def get_manufacturer_id(self):
+        '''Request manufacturer ID from the factory'''
         print("\n" + "=" * 60)
-        print("Generating authentication challenge...")
+        print("Getting issuer ID from manufacturer")
         print("=" * 60)
 
-        # Generate a 32-byte random challenge
-        challenge_bytes = secrets.token_bytes(32)
-        challenge_hex = challenge_bytes.hex()
-
-        self.current_challenge = challenge_hex
-        print(f"✓ Challenge generated: {challenge_hex[:16]}...")
-
-        return challenge_hex
-
-    def challenge_device(self, device_id, device_url='http://localhost:6000'):
-        '''Send a challenge directly to the device for VP generation'''
-        print("\n" + "=" * 60)
-        print(f"Sending challenge to device {device_id}...")
-        print("=" * 60)
-
-        if not self.current_challenge:
-            print("✗ No challenge available. Generate a challenge first.")
-            return False
-
-        # Send directly to device's server endpoint (not through factory)
-        url = f'{device_url}/challenge'
-        payload = {
-            'challenge': self.current_challenge,
-            'gateway_did': self.did
-        }
-
-        print(f"Connecting to device at {url}...")
+        url = f'{self.base_url}/api/gateways/provision'
+        payload = {'gateway_id': self.gateway_id}
 
         try:
             response = requests.post(url, json=payload)
             response.raise_for_status()
             response_data = response.json()
 
-            print(f"✓ Challenge sent successfully")
+            # in practice this will be OOB so no need to cryptographically verify
+            print(f"  ✓ Received response")
+
+            # Extract the keypair and identity information
+            registration_jwk_dict = response_data.get('jwk')
+            self.registration_jwk = json.dumps(registration_jwk_dict)
+            self.registration_did = response_data.get('did')
+            self.registration_verification_method = response_data.get('verification_method')
+
+            # Extract manufacturer information
+            self.manufacturer_did = response_data.get('manufacturer_did')
+            manufacturer_public_key_dict = response_data.get('manufacturer_public_key')
+            self.manufacturer_public_key = json.dumps(manufacturer_public_key_dict)
+            #self.manufacturer_credential = response_data.get('credential')
+
+            #print(f"  ✓ Received long-term registration keypair")
+            #print(f"     Registration key: {self.registration_jwk}")
+            #print(f"     Registration public key (x): {registration_jwk_dict.get('x')}")
+            #print(f"     Registration DID: {self.registration_did}")
+            #print(f"     Registration Verification method: {self.registration_verification_method}")
+            print(f"  ✓ Received manufacturer information")
+            print(f"     Manufacturer DID: {self.manufacturer_did}")
+            print(f"     Manufacturer public key (x): {manufacturer_public_key_dict}")
+            #print(f"     Manufacturer VC: {self.manufacturer_credential}")
+
+            return True
+        except requests.exceptions.RequestException as e:
+            print(f"  ✗ Provisioning failed: {e}")
+            return False
+        
+
+    def challenge_device(self, device_id, device_url='http://localhost:6000'):
+        '''Send a challenge directly to the device for VP generation'''
+        #print("\n" + "=" * 60)
+        print(f"Sending challenge to device {device_id}...")
+        #print("=" * 60)
+
+        #if not self.current_challenge:
+        #    print("✗ No challenge available. Generate a challenge first.")
+        #    return False
+        challenge_bytes = secrets.token_bytes(32)
+        challenge_hex = challenge_bytes.hex()
+
+        self.current_challenge = challenge_hex
+        print(f" Challenge generated: {challenge_hex[:16]}...")
+        # Send directly to device's server endpoint (not through factory)
+        url = f'{device_url}/challenge'
+        payload = {
+            'challenge': challenge_hex,
+            'gateway_did': self.did
+        }
+
+        print(f" Connecting to device at {url}...")
+
+        try:
+            response = requests.post(url, json=payload)
+            response.raise_for_status()
+            response_data = response.json()
+
+            print(f" ✓ Challenge sent successfully")
 
             # Get VP from response
             vp = response_data.get('verifiable_presentation')
             if vp:
-                print(f"✓ Received verifiable presentation from device")
-                return self.verify_presentation(vp, device_id)
+                print(f" ✓ Received response with VP")
+                return self.verify_presentation(vp, device_id) # HERE
             else:
-                print(f"✗ No verifiable presentation in response")
+                print(f" ✗ No verifiable presentation in response")
                 return False
 
         except requests.exceptions.RequestException as e:
@@ -101,7 +136,8 @@ class GatewayClient:
                 "proofPurpose": "authentication",
                 "challenge": self.current_challenge
             })
-
+            
+            print(f" Performing full verification...")
             verification_result = didkit.verifyPresentation(
                 json.dumps(vp),
                 verify_options
@@ -110,9 +146,26 @@ class GatewayClient:
             result_dict = json.loads(verification_result)
 
             if len(result_dict.get('errors', [])) == 0:
-                print(f"✓ Verifiable presentation verified successfully!")
+                print(f" ✓ Verifiable presentation verified successfully!")
                 print(f"   Holder: {vp.get('holder')}")
                 print(f"   Credentials included: {len(vp.get('verifiableCredential', []))}")
+
+                # Verify that the VC was issued by a trusted issuer
+                vcs = vp.get('verifiableCredential', [])
+                if not vcs:
+                    print(f"✗ No credentials in presentation")
+                    return False
+
+                # Check each credential's issuer
+                for i, vc in enumerate(vcs):
+                    issuer = vc.get('issuer')
+                    if issuer != self.manufacturer_did:
+                        print(f"✗ Credential {i+1} from untrusted issuer!")
+                        print(f"   Expected: {self.manufacturer_did}")
+                        print(f"   Received: {issuer}")
+                        return False
+
+                print(f" ✓ All credentials from trusted manufacturer")
 
                 # Clear the challenge after successful verification
                 self.current_challenge = None
@@ -128,54 +181,6 @@ class GatewayClient:
             print(f"✗ Error verifying presentation: {e}")
             return False
 
-"""
-def receive_credential(self, credential):
-    #Store a credential in the device's wallet
-    self.credentials.append(credential)
-    print(f"\n📱 Device {self.device_id}: Credential received and stored")
-    print(f"   Issuer: {credential.get('issuer')}")
-    print(f"   Type: {credential.get('type')}")
-
-    def generate_credential(self):
-        gateway_credential_unsigned = {
-        "@context": [
-            "https://www.w3.org/2018/credentials/v1",
-            #device_context
-        ],
-        "type": ["VerifiableCredential", "GatewayCredential"],
-        "issuer": manufacturer_did,
-        "issuanceDate": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        "credentialSubject": {
-            #credentialSubject.id
-            "id": did,
-            #"deviceId": device_id,
-            #"status": "active"
-        }
-    }
-        
-    proof_options = {
-        "proofPurpose": "assertionMethod",
-        "verificationMethod": manufacturer_verification_method
-    }
-
-    try:
-        signed_credential = didkit.issueCredential(
-            json.dumps(gateway_credential_unsigned),
-            json.dumps(proof_options),
-            manufacturer_jwk
-        )
-        manufacturer_credential = json.loads(signed_manufacturer_credential)
-        print(f"✓ Manufacturer self-signed credential issued")
-        #print(f"  {manufacturer_credential}")
-    except Exception as e:
-        print(f"✗ Error issuing manufacturer credential: {e}")
-        manufacturer_credential = None
-    print("=" * 50 + "\n")    
-"""
-
-
-
-# Stage 2.1: Send challenge to device
 
 # Stage 2.3: Send Authentication Status to Device
 #  Receives VP (Verifiable Presentation)
@@ -193,14 +198,23 @@ def main():
     gateway = GatewayClient(gateway_id=gateway_id)
     print(f"{gateway_id} initialised.")
 
-    # Step 1: Generate challenge for device
+    # Step 0: Get manufacturer ID (trusted issuer)
     try:
-        if not gateway.generate_challenge():
-            print("Failed to generate challenge, exiting")
+        if not gateway.get_manufacturer_id():
+            print("Failed to get manufacturer ID, exiting")
             return
     except Exception as e:
-        print(f"Error during challenge generation: {e}")
+        print(f"Error during manufacturer provisioning: {e}")
         return
+
+    # Step 1: Generate challenge for device
+    #try:
+    #    if not gateway.generate_challenge():
+    #        print("Failed to generate challenge, exiting")
+    #        return
+    #except Exception as e:
+    #    print(f"Error during challenge generation: {e}")
+    #    return
 
     # Step 2: Send challenge to device (device must be running!)
     try:

@@ -473,11 +473,11 @@ def main():
         return
 
     #print("\n" + "=" * 60)
-    print("------Device registration and server startup completed!-----")
-    #print("=" * 60)
-    print(f" Device {test_id} is now ready to receive authentication challenges")
-    print(f" Server listening on http://localhost:{device.device_port}")
+    print("------Device registration and server startup completed!-----\n")
     print("=" * 60)
+    print(f"\n\nDevice {test_id} is now ready to receive authentication challenges.")
+    print(f" Server listening on http://localhost:{device.device_port}...")
+    #print("=" * 60)
 
     # Keep the main thread alive so the server continues running
     try:

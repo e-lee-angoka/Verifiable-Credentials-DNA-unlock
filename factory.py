@@ -341,6 +341,38 @@ def get_device(device_id):
     
     return jsonify({'device': registered_devices[device_id]}), 200
 
+@app.route('/api/gateways/provision', methods=['POST'])
+def provision_gateway():
+    """Provision a user gateway by sending the device manufacturer identity"""
+    global manufacturer_jwk, manufacturer_did, manufacturer_verification_method
+
+    data = request.json
+    gateway_id = data.get('gateway_id')
+    print("\n" + "=" * 60)
+    print(f"\nReceived provisioning request from {gateway_id}")
+    print("\n" + "=" * 60)
+
+    if not gateway_id:
+        return jsonify({'error': 'gateway_id required'}), 400
+
+    #device_did = didkit.keyToDID("key", device_registration_jwk)
+    #print(f" ✓ Device DID: {device_did}")
+    #device_verification_method = didkit.keyToVerificationMethod("key", device_registration_jwk)
+
+    print(f"✓ Gateway provisioned successfully")
+
+    # Return the full keypair (including private key), and public key to the device
+    return jsonify({
+        'message': 'Gateway provisioned successfully',
+        'gateway_id': gateway_id,
+        #'jwk': json.loads(device_registration_jwk),  # Full keypair including private key
+        #'did': device_did,
+        #'verification_method': device_verification_method,
+        #'manufacturer_credential': manufacturer_credential,  # Manufacturer's self-signed credential
+        'manufacturer_did': manufacturer_did,  # Manufacturer's DID to verify VC issuers
+        'manufacturer_public_key': manufacturer_public_key  # Manufacturer's public key for signature verification
+    }), 201
+
 if __name__ == '__main__':
     print("Starting Manufacturer API Server on http://localhost:5000")
     print("Install dependencies: pip install flask didkit")
