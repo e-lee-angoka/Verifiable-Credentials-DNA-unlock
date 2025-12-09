@@ -12,14 +12,21 @@ class DeviceClient:
         self.device_id = device_id
         self.base_url = base_url  # Factory server at port 5000
         self.device_port = device_port  # Device's own server at port 6000 (different from factory!)
-        #self.manufacturer_credential = None  # Credential issued by manufacturer
-        self.manufacturer_public_key = None  # Manufacturer's public key for verification
-        self.registration_jwk = None # keypair used to register future keys
+        self.manufacturer_did = None  # Manufacturer's DID for verification (public key derivable from DID)
+
+        # SECURE STORAGE: In production, these keys are stored in:
+        # - Hardware Security Module (HSM)
+        # - Trusted Platform Module (TPM)
+        # - Secure Enclave (Android/iOS)
+        # Private keys NEVER leave secure storage - only signing operations exposed
+        self._registration_jwk = None  # Private: registration key in secure storage
         self.registration_did = None
         self.registration_verification_method = None
-        self.jwk = None # keypair used for general authentication
+
+        self._jwk = None  # Private: device authentication key in secure storage
         self.did = None
         self.verification_method = None # for the general verification key
+
         self.verifiable_credential = None
         self.app = None  # Flask app instance
         self.server_thread = None  # Thread for running server
@@ -43,24 +50,22 @@ class DeviceClient:
             print(f"  ✓ Received response")
 
             # Extract the keypair and identity information
+            # SECURE STORAGE: Store registration key in secure storage (HSM/TPM/Secure Enclave)
             registration_jwk_dict = response_data.get('jwk')
-            self.registration_jwk = json.dumps(registration_jwk_dict)
+            print(f"Storing private key in SECURE storage")
+            self._registration_jwk = json.dumps(registration_jwk_dict)  # Stored in secure storage
             self.registration_did = response_data.get('did')
             self.registration_verification_method = response_data.get('verification_method')
 
             # Extract manufacturer information
-            manufacturer_public_key_dict = response_data.get('manufacturer_public_key')
-            self.manufacturer_public_key = json.dumps(manufacturer_public_key_dict)
-            #self.manufacturer_credential = response_data.get('credential')
+            self.manufacturer_did = response_data.get('manufacturer_did')
 
-            print(f"  ✓ Received long-term registration keypair")
-            print(f"     Registration key: {self.registration_jwk}")
-            print(f"     Registration public key (x): {registration_jwk_dict.get('x')}")
+            print(f"  ✓ Registration keypair stored in secure storage")
             print(f"     Registration DID: {self.registration_did}")
             print(f"     Registration Verification method: {self.registration_verification_method}")
             print(f"  ✓ Received manufacturer information")
-            print(f"     Manufacturer public key (x): {manufacturer_public_key_dict}")
-            #print(f"     Manufacturer VC: {self.manufacturer_credential}")
+            print(f"    --Public key can be derived from DID--")
+            print(f"     Manufacturer DID: {self.manufacturer_did}")
 
             return True
         except requests.exceptions.RequestException as e:
@@ -74,48 +79,109 @@ class DeviceClient:
         return True
 
     def generate_key(self):
-        '''Generate an EdDSA key pair using DIDKit'''
+        '''Generate an EdDSA key pair using DIDKit and store in secure storage'''
         print("\n" + "=" * 60)
         print("Generating EdDSA key pair for "+self.device_id+"...")
         print("=" * 60)
 
-        # Generate a new Ed25519 key
-        self.jwk = didkit.generateEd25519Key()
-        jwk_dict = json.loads(self.jwk)
-        print(f" ✓ Public key (x): {jwk_dict.get('x')}")
-        self.verification_method = didkit.keyToVerificationMethod("key", self.jwk)
+        # SECURE STORAGE: Generate key in secure storage (HSM/TPM/Secure Enclave)
+        # In production: key generated inside secure hardware, never exported
+        self._jwk = didkit.generateEd25519Key()
+        #jwk_dict = json.loads(self._jwk)
+        #print(f" ✓ Public key (x): {jwk_dict.get('x')}")
+        print(f" ✓ Private key stored in secure storage (not accessible)")
+
         # Get the verification method
-        self.verification_method = didkit.keyToVerificationMethod("key", self.jwk)
-        print(f"✓ Verification method: {self.verification_method}")
+        self.verification_method = didkit.keyToVerificationMethod("key", self._jwk)
+        #print(f"✓ Verification method: {self.verification_method}")
 
         # Get the DID from the key
         print("Generating DID from EdDSA key pair...")
-        self.did = didkit.keyToDID("key", self.jwk)
+        self.did = didkit.keyToDID("key", self._jwk) # "key" means DID contains a public auth key
         print(f" ✓ DID: {self.did}")
 
-        return self.jwk
-    
+        return True  # Success - don't return the private key!
+
+    # ===== SECURE STORAGE SIGNING OPERATIONS =====
+    # In production, these methods interface with HSM/TPM/Secure Enclave
+    # Private keys never leave secure storage - only signing happens inside
+
+    def _secure_sign_credential_with_registration_key(self, credential_unsigned, proof_options):
+        """
+        Sign a credential using the registration key in secure storage.
+
+        In production: sends credential to HSM/TPM, gets back signature
+        Private key never exposed outside secure storage.
+        """
+        if not self._registration_jwk:
+            raise ValueError("No registration key in secure storage")
+
+        # SECURE STORAGE: In production, this happens inside HSM/TPM
+        # We send credential + proof options, HSM signs and returns result
+        signed = didkit.issueCredential(
+            json.dumps(credential_unsigned),
+            json.dumps(proof_options),
+            self._registration_jwk  # In production: HSM uses internal key
+        )
+        return signed
+
+    def _secure_sign_credential_with_device_key(self, credential_unsigned, proof_options):
+        """
+        Sign a credential using the device authentication key in secure storage.
+
+        In production: sends credential to HSM/TPM, gets back signature
+        Private key never exposed outside secure storage.
+        """
+        if not self._jwk:
+            raise ValueError("No device key in secure storage")
+
+        # SECURE STORAGE: In production, this happens inside HSM/TPM
+        signed = didkit.issueCredential(
+            json.dumps(credential_unsigned),
+            json.dumps(proof_options),
+            self._jwk  # In production: HSM uses internal key
+        )
+        return signed
+
+    def _secure_sign_presentation_with_device_key(self, presentation_unsigned, proof_options):
+        """
+        Sign a presentation using the device authentication key in secure storage.
+
+        In production: sends presentation to HSM/TPM, gets back signature
+        Private key never exposed outside secure storage.
+        """
+        if not self._jwk:
+            raise ValueError("No device key in secure storage")
+
+        # Clean the JWK by removing 'use' field if present (DIDKit requirement)
+        jwk_dict = json.loads(self._jwk)
+        if 'use' in jwk_dict:
+            del jwk_dict['use']
+        cleaned_jwk_str = json.dumps(jwk_dict)
+
+        # SECURE STORAGE: In production, this happens inside HSM/TPM
+        print(f" Signing in SECURE element")
+        signed = didkit.issuePresentation(
+            json.dumps(presentation_unsigned),
+            json.dumps(proof_options),
+            cleaned_jwk_str  # In production: HSM uses internal key
+        )
+        return signed
+
+    # ===== END SECURE STORAGE OPERATIONS =====
+
     def register_key(self):
         '''Register this device with the manufacturer, sending signed request'''
         print("\n" + "=" * 60)
         print(f"Registering {self.device_id}'s auth key with manufacturer...")
         print("=" * 60)
 
-        if not self.registration_jwk:
-            print("No registration key, must provision from factory first")
+        if not self._registration_jwk:
+            print("No registration key in secure storage, must provision from factory first")
             return False
 
-        jwk_dict = json.loads(self.registration_jwk)
-
-        # Send only public key information (not the private key 'd')
-        public_key = {
-            'kty': jwk_dict.get('kty'),
-            'crv': jwk_dict.get('crv'),
-            'x': jwk_dict.get('x'),
-            'use': jwk_dict.get('use')  # Optional but good to include
-        }
-        # Get verification method from device key
-        verification_method = didkit.keyToVerificationMethod("key", self.jwk)
+        # Get verification method from device key (public key derivable from DID)
+        verification_method = didkit.keyToVerificationMethod("key", self._jwk)
 
         # Create a verifiable credential containing the registration data
         print(f"Creating signed registration request...")
@@ -125,7 +191,6 @@ class DeviceClient:
                 {
                     "DeviceRegistrationRequest": "https://example.org/credentials#DeviceRegistrationRequest",
                     "device_id": "https://example.org/credentials#deviceId",
-                    "public_key_jwk": "https://example.org/credentials#publicKeyJwk",
                     "did": "https://example.org/credentials#did",
                     "verification_method": "https://example.org/credentials#verificationMethod"
                 }
@@ -135,26 +200,26 @@ class DeviceClient:
             "issuanceDate": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             "credentialSubject": {
                 "device_id": self.device_id,
-                "public_key_jwk": json.dumps(public_key),  # Serialize as string to avoid JSON-LD expansion issues
                 "did": self.did,
                 "verification_method": verification_method
             }
         }
 
-        # Sign the registration request with the registration key
+        # Sign the registration request with the registration key in secure storage
         proof_options = {
             "proofPurpose": "assertionMethod",
             "verificationMethod": self.registration_verification_method
         }
 
         try:
-            signed_registration = didkit.issueCredential(
-                json.dumps(registration_credential),
-                json.dumps(proof_options),
-                self.registration_jwk
+            # SECURE STORAGE: Access secure storage to sign (key never leaves storage)
+            print(f" Accessing secure storage to sign registration request...")
+            signed_registration = self._secure_sign_credential_with_registration_key(
+                registration_credential,
+                proof_options
             )
             signed_registration_dict = json.loads(signed_registration)
-            print(f"✓ Registration request signed with registration key")
+            print(f"✓ Registration request signed in secure storage")
         except Exception as e:
             print(f"✗ Error signing registration request: {e}")
             return False
@@ -171,13 +236,13 @@ class DeviceClient:
             
             print(f"\nKey registered successfully!")
             
-            # Store the manufacturer's public key credential
+            # Store the credential issued by manufacturer
             self.verifiable_credential = response_data.get('credential')
             
             if self.verifiable_credential:
                 print(f"\n✓ Received own verifiable credential credential!")
                 print(f"   Credential type: {self.verifiable_credential.get('type')}")
-                print(f"   Issuer: {self.verifiable_credential.get('issuer')}")
+                print(f"   Issuer DID: {self.verifiable_credential.get('issuer')}")
                 print(f"   Subject: {self.verifiable_credential.get('credentialSubject', {}).get('id')}")
                 """
                 # Verify the manufacturer's credential
@@ -215,25 +280,14 @@ class DeviceClient:
             print("✗ No credential available to present")
             return None
 
-        if not self.jwk:
-            print("✗ No key available for signing presentation")
+        if not self._jwk:
+            print("✗ No key available in secure storage for signing presentation")
             return None
 
         print(f"Challenge: {challenge[:16]}...")
         print(f"Gateway DID: {gateway_did}")
 
         # Clean the JWK - only keep standard fields required by DIDKit
-        jwk_dict = json.loads(self.jwk)
-        cleaned_jwk = {
-            'kty': jwk_dict.get('kty'),
-            'crv': jwk_dict.get('crv'),
-            'x': jwk_dict.get('x'),
-            'd': jwk_dict.get('d')  # Private key component
-        }
-        # Remove any None values
-        cleaned_jwk = {k: v for k, v in cleaned_jwk.items() if v is not None}
-        cleaned_jwk_str = json.dumps(cleaned_jwk)
-
         # Create a verifiable presentation
         # The presentation includes the credential and is signed by the device
         # NOTE: challenge goes in proof_options, NOT in the presentation itself
@@ -255,23 +309,22 @@ class DeviceClient:
         }
 
         try:
-            # Sign the presentation using DIDKit with cleaned JWK
-            signed_presentation = didkit.issuePresentation(
-                json.dumps(presentation),
-                json.dumps(proof_options),
-                cleaned_jwk_str
+            # SECURE STORAGE: Sign presentation in secure storage (key never leaves)
+            print(f" Accessing secure storage to sign presentation...")
+            signed_presentation = self._secure_sign_presentation_with_device_key(
+                presentation,
+                proof_options
             )
 
             vp = json.loads(signed_presentation)
-            print(f"✓ Verifiable presentation generated and signed")
-            print(f"   Holder: {vp.get('holder')}")
-            print(f"   Credentials: {len(vp.get('verifiableCredential', []))}")
+            print(f"✓ Verifiable presentation generated and signed in secure storage")
+            #print(f"   Holder: {vp.get('holder')}")
+            print(f"   Number of Credentials: {len(vp.get('verifiableCredential', []))}")
 
             return vp
 
         except Exception as e:
             print(f"✗ Error generating presentation: {e}")
-            print(f"   JWK fields present: {list(cleaned_jwk.keys())}")
             print(f"   Verification method: {self.verification_method}")
             return None
 
@@ -286,7 +339,7 @@ class DeviceClient:
         vp = self.generate_presentation(challenge, gateway_did)
 
         if vp:
-            print(f"✓ Ready to send verifiable presentation to gateway")
+            print(f"✓ Sending verifiable presentation to gateway...")
             return vp
         else:
             print(f"✗ Failed to generate verifiable presentation")
@@ -308,7 +361,9 @@ class DeviceClient:
             '''Endpoint to receive authentication challenges'''
             data = request.json
             challenge = data.get('challenge')
+            gateway_id = data.get('gateway_id')
             gateway_did = data.get('gateway_did')
+            print(f"challenge received from {gateway_id}")
 
             if not challenge or not gateway_did:
                 return jsonify({'error': 'Missing challenge or gateway_did'}), 400
@@ -359,78 +414,6 @@ class DeviceClient:
         print(f"   Status endpoint: http://localhost:{self.device_port}/status")
 
         return True
-
-    """
-    def issue_credential(self, message):
-        '''Self-issue a verifiable credential with a message'''
-        if not self.jwk:
-            print("No key available for signing")
-            return None
-        
-        #print(f"\nFull JWK before signing:")
-        #print(self.jwk)
-        
-        print(f"\nCreating verifiable credential with message: {message}")
-        
-        # Create a simple verifiable credential
-        credential = {
-            "@context": "https://www.w3.org/2018/credentials/v1",
-            "type": ["VerifiableCredential"],
-            "issuer": self.did,
-            "issuanceDate": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "credentialSubject": {
-                "id": self.did
-            }
-        }
-        
-        # Proof options for signing
-        options = {
-            "proofPurpose": "assertionMethod",
-            "verificationMethod": self.verification_method
-        }
-        
-        #print(f"Credential to sign:")
-        #print(json.dumps(credential, indent=2))
-        #print(f"\nOptions:")
-        #print(json.dumps(options, indent=2))
-        
-        try:
-            # Issue the credential using DIDKit
-            signed_credential = didkit.issueCredential(
-                json.dumps(credential),
-                json.dumps(options),
-                self.jwk
-            )
-            
-            print("Credential issued successfully!")
-            return signed_credential
-        except Exception as e:
-            print(f"Error issuing credential: {e}")
-            print(f"Error type: {type(e)}")
-            return None
-    
-    def send_credential(self, message):
-        '''Issue and send a credential to the manufacturer'''
-        credential = self.issue_credential(message)
-        
-        if not credential:
-            return False
-        
-        url = f'{self.base_url}/api/devices/{self.device_id}/verify-credential'
-        payload = {
-            'credential': json.loads(credential) if isinstance(credential, str) else credential,
-            'message': message  # Send message separately does this mean message isn't signed?
-        }
-        
-        try:
-            response = requests.post(url, json=payload)
-            response.raise_for_status()
-            print(f"Credential sent: {response.json()}")
-            return True
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to send credential: {e}")
-            return False
-    """
 
 def main():
     print("*" * 60)

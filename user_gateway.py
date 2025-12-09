@@ -41,13 +41,11 @@ class GatewayClient:
             # Extract manufacturer information
             self.manufacturer_id = response_data.get('manufacturer_id')
             self.manufacturer_did = response_data.get('manufacturer_did')
-            manufacturer_public_key_dict = response_data.get('manufacturer_public_key')
-            self.manufacturer_public_key = json.dumps(manufacturer_public_key_dict)
 
             print(f"  ✓ Received manufacturer information")
             print(f"     Manufacturer ID: {self.manufacturer_id}")
             print(f"     Manufacturer DID: {self.manufacturer_did}")
-            #print(f"     Manufacturer public key (x): {manufacturer_public_key_dict}")
+            print(f"     (Public key can be derived from DID)")
 
             return True
         except requests.exceptions.RequestException as e:
@@ -179,9 +177,8 @@ def main():
     print("*" * 60)
 
     # Create a gateway instance
-    gateway_id = 'GATEWAY-001'
-    device_test_id = 'DEVICE-001'
-    gateway = GatewayClient(gateway_id=gateway_id)
+    gateway_test_id = 'GATEWAY-001'
+    gateway = GatewayClient(gateway_id=gateway_test_id)
 
     # Step 1: Get manufacturer ID (trusted issuer)
     try:

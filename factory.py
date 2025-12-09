@@ -20,7 +20,6 @@ manufacturer_id = None
 manufacturer_did = None
 manufacturer_verification_method = None
 manufacturer_credential = None
-manufacturer_public_key = None
 
 # In-memory storage for device data
 manufactured_devices = {}
@@ -29,7 +28,7 @@ registered_devices = {}
 # initialise manufacturer
 def init_manufacturer(man_id):
     """Initialize the manufacturer's identity"""
-    global manufacturer_jwk, manufacturer_id, manufacturer_did, manufacturer_verification_method, manufacturer_credential, manufacturer_public_key
+    global manufacturer_jwk, manufacturer_id, manufacturer_did, manufacturer_verification_method, manufacturer_credential
     manufacturer_id = man_id # for testing
     print("\n" + "=" * 60)
     print("Initialising Manufacturer Identity")
@@ -38,15 +37,7 @@ def init_manufacturer(man_id):
     manufacturer_did = didkit.keyToDID("key", manufacturer_jwk) # The did:key method is specifically designed so the DID is just a base58-encoded representation of the public key.
     manufacturer_verification_method = didkit.keyToVerificationMethod("key", manufacturer_jwk)
     print(f" Manufacturer DID: {manufacturer_did}")
-
-    # Extract and store manufacturer's public key (exclude private key 'd')
-    manufacturer_jwk_dict = json.loads(manufacturer_jwk)
-    manufacturer_public_key = {
-        'kty': manufacturer_jwk_dict.get('kty'),
-        'crv': manufacturer_jwk_dict.get('crv'),
-        'x': manufacturer_jwk_dict.get('x'),
-        'use': manufacturer_jwk_dict.get('use')
-    }
+    print(f" (Public key can be derived from DID)")
 
     # Generate a self-signed credential for the manufacturer
     print(f" Generating manufacturer self-signed credential...")
@@ -101,24 +92,14 @@ def provision_device():
     device_registration_jwk = didkit.generateEd25519Key()
     print(f" ✓ Registration Keypair generated")
 
-    # Extract public key only (exclude private key 'd')
-    registration_jwk_dict = json.loads(device_registration_jwk)
-    registration_public_key = {
-        'kty': registration_jwk_dict.get('kty'),
-        'crv': registration_jwk_dict.get('crv'),
-        'x': registration_jwk_dict.get('x'),
-        'use': registration_jwk_dict.get('use')
-    }
-    print(f" ✓ Device registration public key (x): {registration_public_key.get('x')}")
-
     device_did = didkit.keyToDID("key", device_registration_jwk)
     print(f" ✓ Device DID: {device_did}")
+    print(f"    (Public key can be derived from DID)")
     device_verification_method = didkit.keyToVerificationMethod("key", device_registration_jwk)
 
     # Store initial device info (will be completed during registration)
     manufactured_devices[device_id] = {
         'device_id': device_id,
-        'registration_public_key': registration_public_key,
         'did': device_did,
         'verification_method': device_verification_method,
         'provisioned_at': datetime.now().isoformat(),
@@ -129,15 +110,14 @@ def provision_device():
     print(f"✓ Device provisioned successfully")
     print("=" * 50 + "\n")
 
-    # Return the full keypair (including private key), and public key to the device
+    # Return the full keypair (including private key) and manufacturer DID
     return jsonify({
         'message': 'Device provisioned successfully',
         'device_id': device_id,
         'jwk': json.loads(device_registration_jwk),  # Full keypair including private key
         'did': device_did,
         'verification_method': device_verification_method,
-        #'manufacturer_credential': manufacturer_credential,  # Manufacturer's self-signed credential
-        'manufacturer_public_key': manufacturer_public_key  # Manufacturer's public key for signature verification
+        'manufacturer_did': manufacturer_did  # Manufacturer's DID (public key derivable from DID)
     }), 201
 
 @app.route('/api/devices/register', methods=['POST'])
@@ -177,13 +157,10 @@ def register_device():
     issuer_did = signed_registration.get('issuer')
     credential_subject = signed_registration.get('credentialSubject', {})
     device_id = credential_subject.get('device_id')
-    public_key_jwk_str = credential_subject.get('public_key_jwk')
-    # Parse the JWK back from JSON string
-    public_key_jwk = json.loads(public_key_jwk_str) if isinstance(public_key_jwk_str, str) else public_key_jwk_str
     did = credential_subject.get('did')
     verification_method = credential_subject.get('verification_method')
 
-    if not device_id or not public_key_jwk or not did:
+    if not device_id or not did:
         return jsonify({'error': 'Invalid registration data in signed credential'}), 400
 
     print(f"Registration request received from device {device_id}")
@@ -204,11 +181,10 @@ def register_device():
     print(f"\n=== Key registration request from {device_id} ===")
     print(f"Device DID: {did}")
 
-    # Store device info
+    # Store device info (public key derivable from DID)
     print(f"Storing device info in registered_devices[{device_id}]")
     registered_devices[device_id] = {
         'device_id': device_id,
-        'public_key_jwk': public_key_jwk,
         'did': did,
         'verification_method': verification_method,
         'registered_at': datetime.now().isoformat(),
@@ -363,8 +339,7 @@ def provision_gateway():
         'message': 'Gateway provisioned successfully',
         'gateway_id': gateway_id,
         'manufacturer_id': manufacturer_id,
-        'manufacturer_did': manufacturer_did,  # Manufacturer's DID to verify VC issuers
-        'manufacturer_public_key': manufacturer_public_key  # Manufacturer's public key for signature verification
+        'manufacturer_did': manufacturer_did  # Manufacturer's DID (public key derivable from DID)
     }), 201
 
 if __name__ == '__main__':
