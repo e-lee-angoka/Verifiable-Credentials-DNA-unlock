@@ -53,10 +53,10 @@ class GatewayClient:
             return False
         
 
-    def challenge_device(self, device_id, device_url='http://localhost:6000'):
+    def challenge_device(self, device_url='http://localhost:6000'):
         '''Send a challenge directly to the device for VP generation'''
         print("\n" + "=" * 60)
-        print(f"Sending challenge to device {device_id}...")
+        print(f"Sending challenge to device at {device_url}'...")
         print("=" * 60)
 
         challenge_bytes = secrets.token_bytes(32)
@@ -84,7 +84,7 @@ class GatewayClient:
             vp = response_data.get('verifiable_presentation')
             if vp:
                 print(f" ✓ Received response with VP")
-                return self.verify_presentation(vp, device_id) # HERE
+                return self.verify_presentation(vp) # HERE
             else:
                 print(f" ✗ No verifiable presentation in response")
                 return False
@@ -95,10 +95,10 @@ class GatewayClient:
             print(f"   Check errors in device output")
             return False
 
-    def verify_presentation(self, vp, device_id):
+    def verify_presentation(self, vp):
         '''Verify a verifiable presentation from the device'''
         print("\n" + "=" * 60)
-        print(f"Verifying presentation from device {device_id}...")
+        print(f"Verifying presentation from device...")
         print("=" * 60)
 
         try:
@@ -179,6 +179,7 @@ def main():
     # Create a gateway instance
     gateway_test_id = 'GATEWAY-001'
     gateway = GatewayClient(gateway_id=gateway_test_id)
+    gateway_test_id = 'GATEWAY-001'
 
     # Step 1: Get manufacturer ID (trusted issuer)
     try:
@@ -191,7 +192,7 @@ def main():
 
     # Step 2: Challenge device (device must be running!)
     try:
-        if not gateway.challenge_device(device_test_id):
+        if not gateway.challenge_device():
             print("Failed to authenticate device, exiting")
             return
     except Exception as e:

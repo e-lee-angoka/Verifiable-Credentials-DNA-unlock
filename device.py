@@ -77,12 +77,22 @@ class DeviceClient:
         print("This is where the profile build will happen")
         print("-" * 60)
         return True
+    
+    def check_current_attribtutes(self):
+        print(f"**Checking current attributes against internal profile**")
+        print(f"  For this PoC, the function simply returns true")
+        return True
 
     def generate_key(self):
         '''Generate an EdDSA key pair using DIDKit and store in secure storage'''
         print("\n" + "=" * 60)
         print("Generating EdDSA key pair for "+self.device_id+"...")
         print("=" * 60)
+
+        profile_check = self.check_current_attribtutes()
+        if not profile_check:
+            print(f"✗ Current attributes do not match profile: unable to sign")
+            return
 
         # SECURE STORAGE: Generate key in secure storage (HSM/TPM/Secure Enclave)
         # In production: key generated inside secure hardware, never exported
@@ -113,6 +123,10 @@ class DeviceClient:
         In production: sends credential to HSM/TPM, gets back signature
         Private key never exposed outside secure storage.
         """
+        profile_check = self.check_current_attribtutes()
+        if not profile_check:
+            print(f"✗ Current attributes do not match profile: unable to sign")
+            return
         if not self._registration_jwk:
             raise ValueError("No registration key in secure storage")
 
@@ -132,6 +146,10 @@ class DeviceClient:
         In production: sends credential to HSM/TPM, gets back signature
         Private key never exposed outside secure storage.
         """
+        profile_check = self.check_current_attribtutes()
+        if not profile_check:
+            print(f"✗ Current attributes do not match profile: unable to sign")
+            return
         if not self._jwk:
             raise ValueError("No device key in secure storage")
 
@@ -150,6 +168,10 @@ class DeviceClient:
         In production: sends presentation to HSM/TPM, gets back signature
         Private key never exposed outside secure storage.
         """
+        profile_check = self.check_current_attribtutes()
+        if not profile_check:
+            print(f"✗ Current attributes do not match profile: unable to sign")
+            return
         if not self._jwk:
             raise ValueError("No device key in secure storage")
 
@@ -175,6 +197,11 @@ class DeviceClient:
         print("\n" + "=" * 60)
         print(f"Registering {self.device_id}'s auth key with manufacturer...")
         print("=" * 60)
+
+        profile_check = self.check_current_attribtutes()
+        if not profile_check:
+            print(f"✗ Current attributes do not match profile: unable to sign")
+            return
 
         if not self._registration_jwk:
             print("No registration key in secure storage, must provision from factory first")
@@ -275,6 +302,11 @@ class DeviceClient:
         print("\n" + "=" * 60)
         print(f"Generating verifiable presentation for challenge...")
         print("=" * 60)
+
+        profile_check = self.check_current_attribtutes()
+        if not profile_check:
+            print(f"✗ Current attributes do not match profile: unable to create VP")
+            return
 
         if not self.verifiable_credential:
             print("✗ No credential available to present")
