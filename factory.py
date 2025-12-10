@@ -159,6 +159,7 @@ def register_device():
     device_id = credential_subject.get('device_id')
     did = credential_subject.get('did')
     verification_method = credential_subject.get('verification_method')
+    device_port = credential_subject.get('device_port')
 
     if not device_id or not did:
         return jsonify({'error': 'Invalid registration data in signed credential'}), 400
@@ -187,6 +188,7 @@ def register_device():
         'device_id': device_id,
         'did': did,
         'verification_method': verification_method,
+        'device_port': device_port,
         'registered_at': datetime.now().isoformat(),
         'status': 'active'
     }
@@ -339,7 +341,8 @@ def provision_gateway():
         'message': 'Gateway provisioned successfully',
         'gateway_id': gateway_id,
         'manufacturer_id': manufacturer_id,
-        'manufacturer_did': manufacturer_did  # Manufacturer's DID (public key derivable from DID)
+        'manufacturer_did': manufacturer_did,  # Manufacturer's DID (public key derivable from DID)
+        'registered_devices': registered_devices  # All registered devices with their info
     }), 201
 
 if __name__ == '__main__':

@@ -16,6 +16,7 @@ class GatewayClient:
         self.current_challenge = None  # Store current challenge for verification
         self.manufacturer_id = None  # Trusted issuer DID (set during provisioning)
         self.manufacturer_did = None  # Trusted issuer DID (set during provisioning)
+        self.registered_devices = {}  # Store registered devices from manufacturer
 
         print(f"\n{'='*60}")
         print(f"📱 Gateway {self.gateway_id} initialised")
@@ -41,11 +42,13 @@ class GatewayClient:
             # Extract manufacturer information
             self.manufacturer_id = response_data.get('manufacturer_id')
             self.manufacturer_did = response_data.get('manufacturer_did')
+            self.registered_devices = response_data.get('registered_devices', {})
 
             print(f"  ✓ Received manufacturer information")
             print(f"     Manufacturer ID: {self.manufacturer_id}")
             print(f"     Manufacturer DID: {self.manufacturer_did}")
             print(f"     (Public key can be derived from DID)")
+            print(f"  ✓ Received registered devices: {len(self.registered_devices)} device(s)")
 
             return True
         except requests.exceptions.RequestException as e:
@@ -53,10 +56,25 @@ class GatewayClient:
             return False
         
 
-    def challenge_device(self, device_url='http://localhost:6000'):
+    def challenge_device(self, device_id):
         '''Send a challenge directly to the device for VP generation'''
+        # Look up device in registered_devices by device_id
+        if device_id not in self.registered_devices:
+            print(f"✗ Device {device_id} not found in registered_devices")
+            return False
+
+        device_info = self.registered_devices[device_id]
+
+        # Extract device port and construct URL
+        device_port = device_info.get('device_port')
+        if not device_port:
+            print(f"✗ No device_port found for device {device_id}")
+            return False
+
+        device_url = f'http://localhost:{device_port}'
+
         print("\n" + "=" * 60)
-        print(f"Sending challenge to device at {device_url}'...")
+        print(f"Sending challenge to device {device_id} at {device_url}...")
         print("=" * 60)
 
         challenge_bytes = secrets.token_bytes(32)
@@ -190,9 +208,20 @@ def main():
         print(f"Error during manufacturer provisioning: {e}")
         return
 
-    # Step 2: Challenge device (device must be running!)
+    # Step 2: Select a device from registered_devices
+    if not gateway.registered_devices:
+        print("No registered devices available, exiting")
+        return
+
+    # Select the first device from registered_devices
+    device_id = next(iter(gateway.registered_devices))
+    print(f"\n{'='*60}")
+    print(f"Selected device {device_id} for authentication")
+    print(f"{'='*60}")
+
+    # Step 3: Challenge device (device must be running!)
     try:
-        if not gateway.challenge_device():
+        if not gateway.challenge_device(device_id):
             print("Failed to authenticate device, exiting")
             return
     except Exception as e:

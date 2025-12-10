@@ -219,7 +219,8 @@ class DeviceClient:
                     "DeviceRegistrationRequest": "https://example.org/credentials#DeviceRegistrationRequest",
                     "device_id": "https://example.org/credentials#deviceId",
                     "did": "https://example.org/credentials#did",
-                    "verification_method": "https://example.org/credentials#verificationMethod"
+                    "verification_method": "https://example.org/credentials#verificationMethod",
+                    "device_port": "https://example.org/credentials#devicePort"
                 }
             ],
             "type": ["VerifiableCredential", "DeviceRegistrationRequest"],
@@ -228,7 +229,8 @@ class DeviceClient:
             "credentialSubject": {
                 "device_id": self.device_id,
                 "did": self.did,
-                "verification_method": verification_method
+                "verification_method": verification_method,
+                "device_port": self.device_port
             }
         }
 
